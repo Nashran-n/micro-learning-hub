@@ -1,0 +1,37 @@
+Start
+[Filled Circle] → "Begin"
+Initial Authentication Flow
+"Begin" → "Check User Session"
+Decision: "Is User Logged In?"
+Yes → "Load Dashboard" (proceed to lesson selection)
+No → "Display Login Screen"
+"Display Login Screen" → "Enter Credentials"
+"Enter Credentials" → "Validate Credentials"
+Decision: "Login Successful?"
+Yes → "Load Dashboard"
+No → "Show Error Message" → (loop back to "Enter Credentials" or "End" if user exits)
+Lesson Selection and Quiz Process
+"Load Dashboard" → "View Available Lessons"
+"View Available Lessons" → "Select Lesson"
+"Select Lesson" → "Start Quiz"
+"Start Quiz" → "Answer Question"
+"Answer Question" → Decision: "Correct Answer?"
+Yes → "Record Score (100%)" → "Update Progress"
+No → "Record Score (0%)" → "Offer Retry"
+"Offer Retry" → Decision: "Retry?"
+Yes → (loop back to "Answer Question")
+No → "Update Progress"
+Progress Update and Display
+"Update Progress" → "Save Attempt to Firestore" (parallel process)
+"Save Attempt to Firestore" → "Update Completed Lessons"
+"Save Attempt to Firestore" → "Calculate Average Score"
+"Update Progress" → "Refresh Dashboard"
+"Refresh Dashboard" → "Display Progress" (e.g., Completed Lessons, Average Score)
+"Display Progress" → Decision: "More Lessons?"
+Yes → (loop back to "View Available Lessons")
+No → "Logout Option"
+"Logout Option" → Decision: "Logout?"
+Yes → "Sign Out" → (loop back to "Check User Session")
+No → (loop back to "Display Progress")
+End
+[Bullseye Circle] ← (from "Sign Out" or user exit)
