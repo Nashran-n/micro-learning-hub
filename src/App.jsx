@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { collection, getDocs, doc, setDoc, getDoc, updateDoc, Timestamp } from "firebase/firestore";
+import { collection, getDocs, doc, setDoc, getDoc, updateDoc, Timestamp, onSnapshot } from "firebase/firestore";
 import { db, auth } from "./firebase";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import LessonCard from "./components/LessonCard";
@@ -10,6 +10,9 @@ import { getPersonalizedLessons } from "./utils/mockAI";
 import Login from "./components/Login";
 import UserProfile from "./components/UserProfile";
 import Leaderboard from "./components/Leaderboard";
+import ScheduleInput from "./components/ScheduleInput";
+import FeedbackForm from "./components/FeedbackForm";
+import FeedbackList from "./components/FeedbackList";
 
 export default function App() {
   const [selectedLesson, setSelectedLesson] = useState(null);
@@ -18,12 +21,26 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [latestAttempt, setLatestAttempt] = useState(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
-  const [savedQuizzes, setSavedQuizzes] = useState({}); // Cache saved progress
-  const [attemptsCache, setAttemptsCache] = useState({}); // Cache attempt history
-  const [chartRefresh, setChartRefresh] = useState(0); // Trigger for chart refresh
+  const [savedQuizzes, setSavedQuizzes] = useState({});
+  const [attemptsCache, setAttemptsCache] = useState({});
+  const [chartRefresh, setChartRefresh] = useState(0);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [userProfile, setUserProfile] = useState({ name: "", email: "", preferences: [], bio: "", avatarUrl: "", dateOfBirth: "", hintUsage: 0, achievements: [] });
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackLesson, setFeedbackLesson] = useState(null);
+  const [userProfile, setUserProfile] = useState({
+    name: "",
+    email: "",
+    preferences: [],
+    bio: "",
+    avatarUrl: "",
+    dateOfBirth: "",
+    hintUsage: 0,
+    achievements: [],
+    notificationEnabled: true,
+  });
   const [notifications, setNotifications] = useState([]);
+  const [userSchedules, setUserSchedules] = useState([]);
+  const [showAllLessons, setShowAllLessons] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -47,7 +64,7 @@ export default function App() {
             setAttemptsCache({});
             await setDoc(docRef, { completedLessons: [], attempts: [], inProgressLessons: [], savedQuizzes: {} }, { merge: true });
           }
-          // Load user profile and leaderboard data
+          // Load user profile
           const profileRef = doc(db, "users", userId);
           const profileSnap = await getDoc(profileRef);
           if (profileSnap.exists()) {
@@ -62,6 +79,7 @@ export default function App() {
               dateOfBirth: data.dateOfBirth || "",
               hintUsage: data.hintUsage || 0,
               achievements: data.achievements || [],
+              notificationEnabled: data.notificationEnabled !== undefined ? data.notificationEnabled : true,
             });
           } else {
             await setDoc(profileRef, {
@@ -70,9 +88,34 @@ export default function App() {
               preferences: { categories: ["Language", "Mindfulness", "Science"] },
               hintUsage: 0,
               achievements: [],
+              notificationEnabled: true,
             }, { merge: true });
-            setUserProfile({ name: "", email: currentUser.email || "", preferences: ["Language", "Mindfulness", "Science"], bio: "", avatarUrl: "", dateOfBirth: "", hintUsage: 0, achievements: [] });
+            setUserProfile({
+              name: "",
+              email: currentUser.email || "",
+              preferences: ["Language", "Mindfulness", "Science"],
+              bio: "",
+              avatarUrl: "",
+              dateOfBirth: "",
+              hintUsage: 0,
+              achievements: [],
+              notificationEnabled: true,
+            });
           }
+          // Load user schedules with real-time listener
+          const scheduleRef = doc(db, "schedules", userId);
+          const unsubscribeSchedule = onSnapshot(scheduleRef, (docSnap) => {
+            if (docSnap.exists()) {
+              const slots = docSnap.data().slots || [];
+              setUserSchedules(slots);
+              console.log("Schedule updated:", slots); // Debug log
+            } else {
+              setUserSchedules([]);
+              console.log("No schedule found, set to empty"); // Debug log
+              setDoc(scheduleRef, { slots: [], updatedAt: Timestamp.fromDate(new Date()) }, { merge: true });
+            }
+          });
+          return () => unsubscribeSchedule();
         };
         fetchInitialData();
       } else {
@@ -81,7 +124,19 @@ export default function App() {
         setInProgressLessons([]);
         setSavedQuizzes({});
         setAttemptsCache({});
-        setUserProfile({ name: "", email: "", preferences: [], bio: "", avatarUrl: "", dateOfBirth: "", hintUsage: 0, achievements: [] });
+        setUserProfile({
+          name: "",
+          email: "",
+          preferences: [],
+          bio: "",
+          avatarUrl: "",
+          dateOfBirth: "",
+          hintUsage: 0,
+          achievements: [],
+          notificationEnabled: true,
+        });
+        setNotifications([]);
+        setUserSchedules([]);
       }
     });
     return () => unsubscribe();
@@ -96,12 +151,30 @@ export default function App() {
   });
 
   const userPreferences = userProfile.preferences.length > 0 ? userProfile.preferences : ["Language", "Mindfulness", "Science"];
-  const personalizedLessons = getPersonalizedLessons(lessons, { categories: userPreferences });
+  const [personalizedLessons, setPersonalizedLessons] = useState([]);
+  useEffect(() => {
+    const fetchPersonalizedLessons = async () => {
+      const lessonsFiltered = await getPersonalizedLessons(lessons, { categories: userPreferences }, userSchedules, showAllLessons);
+      // Renumber lessons for display
+      const renumberedLessons = lessonsFiltered.map((lesson, index) => ({
+        ...lesson,
+        displayTitle: `Lesson ${index + 1}: ${lesson.title.split(": ")[1] || lesson.title}`,
+      }));
+      setPersonalizedLessons(renumberedLessons);
+      console.log("Lessons fetched:", renumberedLessons, "Schedules:", userSchedules, "Show all:", showAllLessons); // Debug log
+    };
+    fetchPersonalizedLessons();
+    // Poll every 10 seconds for time changes
+    const interval = setInterval(fetchPersonalizedLessons, 10000);
+    return () => clearInterval(interval);
+  }, [lessons, userPreferences, userSchedules, showAllLessons]);
 
   const handleStartQuiz = (lesson) => {
     const savedProgress = savedQuizzes[lesson.id];
     const lessonAttemptsRaw = attemptsCache[lesson.id] || [];
-    const lessonAttempts = Array.isArray(lessonAttemptsRaw) ? lessonAttemptsRaw.filter(a => a && a.lessonId) : [];
+    const lessonAttempts = Array.isArray(lessonAttemptsRaw)
+      ? lessonAttemptsRaw.filter((a) => a && a.lessonId)
+      : [];
     if (savedProgress) {
       setSelectedLesson({ ...lesson, savedProgress, initialAttempts: lessonAttempts });
     } else {
@@ -125,7 +198,9 @@ export default function App() {
     if (user) {
       const docRef = doc(db, "progress", user.uid);
       const docSnap = await getDoc(docRef);
-      const currentData = docSnap.exists() ? docSnap.data() : { completedLessons: [], attempts: [], inProgressLessons: [], savedQuizzes: {} };
+      const currentData = docSnap.exists()
+        ? docSnap.data()
+        : { completedLessons: [], attempts: [], inProgressLessons: [], savedQuizzes: {} };
       const newAttempt = {
         lessonId,
         timestamp: Timestamp.fromDate(new Date()),
@@ -143,14 +218,24 @@ export default function App() {
       newCompletedLessons = newCompletedLessons.filter((p) => p.lessonId !== lessonId);
 
       if (score === 100) {
-        newCompletedLessons.push({ userId: user.uid, lessonId, completed: true, score, progress: 100 });
+        newCompletedLessons.push({
+          userId: user.uid,
+          lessonId,
+          completed: true,
+          score,
+          progress: 100,
+        });
         if (newCompletedLessons.length === 1) {
           handleUpdateAchievement("First Quiz Completed");
-          addNotification("Congratulations! You completed your first quiz!");
+          if (userProfile.notificationEnabled) {
+            addNotification("Congratulations! You completed your first quiz!", "success");
+          }
         }
         newInProgressLessons = newInProgressLessons.filter((p) => p.lessonId !== lessonId);
       } else {
-        const existingProgressIndex = newInProgressLessons.findIndex((p) => p.lessonId === lessonId);
+        const existingProgressIndex = newInProgressLessons.findIndex(
+          (p) => p.lessonId === lessonId
+        );
         if (existingProgressIndex !== -1) {
           newInProgressLessons[existingProgressIndex].progress = score;
         } else {
@@ -177,6 +262,10 @@ export default function App() {
         { merge: true }
       );
       setChartRefresh((prev) => prev + 1);
+      // Open feedback form
+      const lesson = lessons.find((l) => l.id === lessonId);
+      setFeedbackLesson({ id: lessonId, title: lesson?.title || "Lesson" });
+      setIsFeedbackOpen(true);
     }
     if (shouldClose) setSelectedLesson(null);
   };
@@ -199,12 +288,18 @@ export default function App() {
     if (user) {
       const docRef = doc(db, "progress", user.uid);
       const docSnap = await getDoc(docRef);
-      const currentData = docSnap.exists() ? docSnap.data() : { completedLessons: [], inProgressLessons: [], savedQuizzes: {} };
+      const currentData = docSnap.exists()
+        ? docSnap.data()
+        : { completedLessons: [], inProgressLessons: [], savedQuizzes: {} };
 
-      const newCompletedLessons = currentData.completedLessons.filter((p) => p.lessonId !== lessonId);
+      const newCompletedLessons = currentData.completedLessons.filter(
+        (p) => p.lessonId !== lessonId
+      );
       const updatedSavedQuizzes = { ...currentData.savedQuizzes };
       delete updatedSavedQuizzes[lessonId];
-      const newInProgressLessons = currentData.inProgressLessons.filter((p) => p.lessonId !== lessonId);
+      const newInProgressLessons = currentData.inProgressLessons.filter(
+        (p) => p.lessonId !== lessonId
+      );
       newInProgressLessons.push({ userId: user.uid, lessonId, progress: 0 });
 
       setCompletedLessons(newCompletedLessons);
@@ -241,24 +336,41 @@ export default function App() {
     setSavedQuizzes({});
     setAttemptsCache({});
     setChartRefresh(0);
-    setUserProfile({ name: "", email: "", preferences: [], bio: "", avatarUrl: "", dateOfBirth: "", hintUsage: 0, achievements: [] });
+    setUserProfile({
+      name: "",
+      email: "",
+      preferences: [],
+      bio: "",
+      avatarUrl: "",
+      dateOfBirth: "",
+      hintUsage: 0,
+      achievements: [],
+      notificationEnabled: true,
+    });
     setNotifications([]);
+    setUserSchedules([]);
+    setIsFeedbackOpen(false);
   };
 
   const handleUpdateProfile = async (updatedProfile) => {
     if (user) {
       const profileRef = doc(db, "users", user.uid);
-      await setDoc(profileRef, {
-        email: updatedProfile.email,
-        name: updatedProfile.name,
-        preferences: { categories: updatedProfile.preferences },
-        bio: updatedProfile.bio,
-        avatarUrl: updatedProfile.avatarUrl,
-        dateOfBirth: updatedProfile.dateOfBirth,
-        hintUsage: updatedProfile.hintUsage,
-        achievements: updatedProfile.achievements,
-        createdAt: userProfile.createdAt || Timestamp.fromDate(new Date()),
-      }, { merge: true });
+      await setDoc(
+        profileRef,
+        {
+          email: updatedProfile.email,
+          name: updatedProfile.name,
+          preferences: { categories: updatedProfile.preferences },
+          bio: updatedProfile.bio,
+          avatarUrl: updatedProfile.avatarUrl,
+          dateOfBirth: updatedProfile.dateOfBirth,
+          hintUsage: updatedProfile.hintUsage,
+          achievements: updatedProfile.achievements,
+          notificationEnabled: updatedProfile.notificationEnabled,
+          createdAt: userProfile.createdAt || Timestamp.fromDate(new Date()),
+        },
+        { merge: true }
+      );
       setUserProfile({ ...updatedProfile, email: updatedProfile.email });
     }
   };
@@ -272,19 +384,43 @@ export default function App() {
     }
   };
 
-  const addNotification = (message) => {
-    const id = Date.now();
-    setNotifications((prev) => [...prev, { id, message, timestamp: new Date() }]);
-    setTimeout(() => setNotifications((prev) => prev.filter((n) => n.id !== id)), 5000); // Auto-dismiss after 5 seconds
+  const addNotification = (message, type = "success") => {
+    if (user && userProfile.notificationEnabled) {
+      const id = Date.now();
+      setNotifications((prev) => [...prev, { id, message, type, timestamp: new Date() }]);
+      setTimeout(() => setNotifications((prev) => prev.filter((n) => n.id !== id)), 5000);
+    }
   };
 
   const handleOpenProfile = () => setIsProfileOpen(true);
   const handleCloseProfile = () => setIsProfileOpen(false);
 
+  const handleFeedbackSubmit = () => {
+    if (userProfile.notificationEnabled) {
+      addNotification("Thank you for your feedback!", "success");
+    }
+  };
+
+  const handleUpdateSchedule = (updatedSchedules) => {
+    setUserSchedules(updatedSchedules);
+    console.log("handleUpdateSchedule:", updatedSchedules); // Debug log
+    // Immediately fetch lessons after schedule update
+    const fetchPersonalizedLessons = async () => {
+      const lessonsFiltered = await getPersonalizedLessons(lessons, { categories: userPreferences }, updatedSchedules, showAllLessons);
+      const renumberedLessons = lessonsFiltered.map((lesson, index) => ({
+        ...lesson,
+        displayTitle: `Lesson ${index + 1}: ${lesson.title.split(": ")[1] || lesson.title}`,
+      }));
+      setPersonalizedLessons(renumberedLessons);
+      console.log("Lessons after schedule update:", renumberedLessons); // Debug log
+    };
+    fetchPersonalizedLessons();
+  };
+
   const lessonProgress = personalizedLessons.reduce((acc, lesson) => {
     const completed = completedLessons.find((p) => p && p.lessonId === lesson.id);
     const inProgress = inProgressLessons.find((p) => p && p.lessonId === lesson.id);
-    acc[lesson.id] = completed ? completed.progress || 100 : (inProgress ? inProgress.progress : 0);
+    acc[lesson.id] = completed ? completed.progress || 100 : inProgress ? inProgress.progress : 0;
     return acc;
   }, {});
 
@@ -297,7 +433,9 @@ export default function App() {
         {notifications.map((notification) => (
           <div
             key={notification.id}
-            className="fixed top-4 right-4 bg-green-500 text-white p-3 rounded-lg shadow-lg z-50"
+            className={`fixed top-4 right-4 text-white p-3 rounded-lg shadow-lg z-50 ${
+              notification.type === "success" ? "bg-green-500" : "bg-red-500"
+            }`}
           >
             {notification.message} ({notification.timestamp.toLocaleTimeString()})
           </div>
@@ -322,6 +460,19 @@ export default function App() {
                 Logout
               </button>
             </div>
+            <ScheduleInput onUpdateSchedule={handleUpdateSchedule} onNotify={addNotification} />
+            <FeedbackList />
+            <div className="mb-4">
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={showAllLessons}
+                  onChange={(e) => setShowAllLessons(e.target.checked)}
+                  className="form-checkbox h-5 w-5 text-blue-600"
+                />
+                <span className="text-gray-700">Show all lessons (ignore schedule)</span>
+              </label>
+            </div>
             <ProgressDashboard
               progress={completedLessons}
               userId={user.uid}
@@ -330,17 +481,25 @@ export default function App() {
             />
             <Leaderboard userId={user.uid} preferences={userPreferences} />
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-8 mt-8">
-              {personalizedLessons.map((lesson) => (
-                <LessonCard
-                  key={lesson.id}
-                  lesson={lesson}
-                  progress={lessonProgress[lesson.id]}
-                  isCompleted={!!completedLessons.find((p) => p.lessonId === lesson.id && p.progress === 100)}
-                  isSaved={!!savedQuizzes[lesson.id]}
-                  onRestart={() => handleRestartLesson(lesson.id)}
-                  onStartQuiz={() => handleStartQuiz(lesson)}
-                />
-              ))}
+              {personalizedLessons.length === 0 ? (
+                <p className="text-gray-600 text-center">
+                  No lessons available. Try updating your preferences or schedule.
+                </p>
+              ) : (
+                personalizedLessons.map((lesson) => (
+                  <LessonCard
+                    key={lesson.id}
+                    lesson={{ ...lesson, title: lesson.displayTitle }}
+                    progress={lessonProgress[lesson.id]}
+                    isCompleted={!!completedLessons.find(
+                      (p) => p.lessonId === lesson.id && p.progress === 100
+                    )}
+                    isSaved={!!savedQuizzes[lesson.id]}
+                    onRestart={() => handleRestartLesson(lesson.id)}
+                    onStartQuiz={() => handleStartQuiz(lesson)}
+                  />
+                ))
+              )}
             </div>
             {selectedLesson && (
               <QuizModal
@@ -374,6 +533,14 @@ export default function App() {
                 profile={userProfile}
                 onUpdateProfile={handleUpdateProfile}
                 onClose={handleCloseProfile}
+              />
+            )}
+            {isFeedbackOpen && feedbackLesson && (
+              <FeedbackForm
+                lessonId={feedbackLesson.id}
+                lessonTitle={feedbackLesson.title}
+                onSubmit={handleFeedbackSubmit}
+                onClose={() => setIsFeedbackOpen(false)}
               />
             )}
           </>

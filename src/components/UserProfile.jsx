@@ -1,141 +1,263 @@
-import React, { useState } from "react";
-import { motion } from "framer-motion";
+import React, { useState, useEffect, useRef } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { db, auth } from "../firebase";
 
 const UserProfile = ({ profile, onUpdateProfile, onClose }) => {
-  const [name, setName] = useState(profile.name || "");
-  const [email, setEmail] = useState(profile.email || "");
-  const [bio, setBio] = useState(profile.bio || "");
-  const [avatarUrl, setAvatarUrl] = useState(profile.avatarUrl || "");
-  const [dateOfBirth, setDateOfBirth] = useState(profile.dateOfBirth || "");
-  const [preferences, setPreferences] = useState(profile.preferences || []);
+  const [formData, setFormData] = useState({
+    name: profile.name || "",
+    email: profile.email || "",
+    preferences: profile.preferences || [],
+    bio: profile.bio || "",
+    avatarUrl: profile.avatarUrl || "",
+    dateOfBirth: profile.dateOfBirth || "",
+    hintUsage: profile.hintUsage || 0,
+    achievements: profile.achievements || [],
+    notificationEnabled: profile.notificationEnabled || true,
+  });
+  const [progressSummary, setProgressSummary] = useState({
+    completedLessons: 0,
+    averageScore: 0,
+  });
+  const [isEditing, setIsEditing] = useState(false);
   const [error, setError] = useState(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  const modalRef = useRef(null);
 
-  const handleSubmit = (e) => {
+  const availableCategories = ["Language", "Mindfulness", "Science", "Math", "History"];
+
+  useEffect(() => {
+    const fetchProgressSummary = async () => {
+      const user = auth.currentUser;
+      if (user) {
+        const docRef = doc(db, "progress", user.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const completedLessons = data.completedLessons?.length || 0;
+          const attempts = data.attempts || [];
+          const averageScore =
+            attempts.length > 0
+              ? Math.round(
+                  attempts.reduce((sum, attempt) => sum + attempt.score, 0) / attempts.length
+                )
+              : 0;
+          setProgressSummary({ completedLessons, averageScore });
+        }
+      }
+    };
+    fetchProgressSummary();
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (modalRef.current && !modalRef.current.contains(event.target)) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [onClose]);
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!name || !email) {
-      setError("Name and email are required.");
-      return;
-    }
-    if (!emailRegex.test(email)) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-    if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
-      setError("Please enter a valid date (YYYY-MM-DD).");
-      return;
-    }
-
-    const updatedProfile = { name, email, bio, avatarUrl, dateOfBirth, preferences, hintUsage: profile.hintUsage, achievements: profile.achievements };
-    onUpdateProfile(updatedProfile);
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 2000);
     setError(null);
+    try {
+      await onUpdateProfile(formData);
+      setIsEditing(false);
+    } catch (err) {
+      setError("Failed to update profile: " + err.message);
+    }
   };
 
-  const togglePreference = (pref) => {
-    setPreferences((prev) =>
-      prev.includes(pref) ? prev.filter((p) => p !== pref) : [...prev, pref]
-    );
+  const handlePreferenceToggle = (category) => {
+    setFormData((prev) => ({
+      ...prev,
+      preferences: prev.preferences.includes(category)
+        ? prev.preferences.filter((c) => c !== category)
+        : [...prev.preferences, category],
+    }));
   };
 
   return (
-    <motion.div
-      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0, transition: { duration: 0.3 } }}
-    >
-      <motion.div
-        className="bg-white p-6 rounded-lg max-w-md w-full shadow-lg"
-        initial={{ scale: 0.8 }}
-        animate={{ scale: 1 }}
-        transition={{ type: "spring", stiffness: 300 }}
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div
+        ref={modalRef}
+        className="bg-white rounded-lg p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-xl"
       >
-        <h2 className="text-xl font-bold text-gray-900 mb-4">User Profile</h2>
+        <h2 className="text-2xl font-bold text-gray-900 mb-6">Your Profile</h2>
         {error && <p className="text-red-600 mb-4">{error}</p>}
-        {saveSuccess && <p className="text-green-600 mb-4">Profile saved successfully!</p>}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-            required
-          />
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Email"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-            required
-          />
-          <textarea
-            value={bio}
-            onChange={(e) => setBio(e.target.value)}
-            placeholder="Bio"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-            rows="3"
-          />
-          <input
-            type="url"
-            value={avatarUrl}
-            onChange={(e) => setAvatarUrl(e.target.value)}
-            placeholder="Avatar URL (e.g., https://example.com/image.jpg)"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-          />
-          <input
-            type="date"
-            value={dateOfBirth}
-            onChange={(e) => setDateOfBirth(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
-          />
-          <div>
-            <label className="block text-gray-700 mb-2">Preferences</label>
-            {["Language", "Mindfulness", "Science"].map((pref) => (
-              <div key={pref} className="flex items-center mb-2">
-                <input
-                  type="checkbox"
-                  checked={preferences.includes(pref)}
-                  onChange={() => togglePreference(pref)}
-                  className="mr-2"
+        <div className="space-y-6">
+          {/* Profile Picture */}
+          <div className="flex items-center space-x-4">
+            <div className="w-24 h-24 rounded-full overflow-hidden bg-gray-200">
+              {formData.avatarUrl ? (
+                <img
+                  src={formData.avatarUrl}
+                  alt="Profile"
+                  className="w-full h-full object-cover"
                 />
-                <span>{pref}</span>
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-gray-500">
+                  No Image
+                </div>
+              )}
+            </div>
+            {isEditing && (
+              <input
+                type="url"
+                value={formData.avatarUrl}
+                onChange={(e) => setFormData({ ...formData, avatarUrl: e.target.value })}
+                placeholder="Enter image URL"
+                className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            )}
+          </div>
+
+          {/* Basic Info */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-gray-700 font-semibold">Name</label>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              ) : (
+                <p className="text-gray-900">{formData.name || "Not set"}</p>
+              )}
+            </div>
+            <div>
+              <label className="block text-gray-700 font-semibold">Email</label>
+              <p className="text-gray-900">{formData.email}</p>
+            </div>
+            <div>
+              <label className="block text-gray-700 font-semibold">Date of Birth</label>
+              {isEditing ? (
+                <input
+                  type="date"
+                  value={formData.dateOfBirth}
+                  onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
+                  className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              ) : (
+                <p className="text-gray-900">{formData.dateOfBirth || "Not set"}</p>
+              )}
+            </div>
+            <div>
+              <label className="block text-gray-700 font-semibold">Bio</label>
+              {isEditing ? (
+                <textarea
+                  value={formData.bio}
+                  onChange={(e) => setFormData({ ...formData, bio: e.target.value })}
+                  className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  rows="4"
+                />
+              ) : (
+                <p className="text-gray-900">{formData.bio || "Not set"}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Preferences */}
+          <div>
+            <label className="block text-gray-700 font-semibold mb-2">Learning Preferences</label>
+            {isEditing ? (
+              <div className="grid grid-cols-2 gap-2">
+                {availableCategories.map((category) => (
+                  <label key={category} className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={formData.preferences.includes(category)}
+                      onChange={() => handlePreferenceToggle(category)}
+                      className="form-checkbox h-5 w-5 text-blue-600"
+                    />
+                    <span className="text-gray-700">{category}</span>
+                  </label>
+                ))}
               </div>
-            ))}
+            ) : (
+              <p className="text-gray-900">
+                {formData.preferences.length > 0
+                  ? formData.preferences.join(", ")
+                  : "Not set"}
+              </p>
+            )}
           </div>
+
+          {/* Progress Summary */}
           <div>
-            <label className="block text-gray-700 mb-2">Hint Usage: {profile.hintUsage}</label>
+            <label className="block text-gray-700 font-semibold mb-2">Progress Summary</label>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <p className="text-gray-900">
+                Completed Lessons: {progressSummary.completedLessons}
+              </p>
+              <p className="text-gray-900">
+                Average Quiz Score: {progressSummary.averageScore}%
+              </p>
+              <p className="text-gray-900">
+                Hint Usage: {formData.hintUsage}
+              </p>
+              <p className="text-gray-900">
+                Achievements: {formData.achievements.length > 0 ? formData.achievements.join(", ") : "None"}
+              </p>
+            </div>
           </div>
+
+          {/* Notification Settings */}
           <div>
-            <label className="block text-gray-700 mb-2">Achievements:</label>
-            <ul className="list-disc pl-5 text-gray-600">
-              {profile.achievements.map((achievement, index) => (
-                <li key={index}>{achievement}</li>
-              ))}
-            </ul>
+            <label className="block text-gray-700 font-semibold mb-2">Notification Settings</label>
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={formData.notificationEnabled}
+                onChange={(e) =>
+                  setFormData({ ...formData, notificationEnabled: e.target.checked })
+                }
+                disabled={!isEditing}
+                className="form-checkbox h-5 w-5 text-blue-600"
+              />
+              <span className="text-gray-700">Enable notifications</span>
+            </label>
           </div>
-          <div className="flex justify-end space-x-3">
+        </div>
+
+        {/* Actions */}
+        <div className="mt-6 flex justify-end space-x-4">
+          {isEditing ? (
+            <>
+              <button
+                onClick={handleSubmit}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setIsEditing(false)}
+                className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
             <button
-              type="submit"
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+              onClick={() => setIsEditing(true)}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              Save
+              Edit Profile
             </button>
-            <button
-              type="button"
-              className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 transition duration-200"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </motion.div>
-    </motion.div>
+          )}
+          <button
+            onClick={onClose}
+            className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
   );
 };
 
